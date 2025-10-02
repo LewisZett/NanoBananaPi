@@ -255,6 +255,8 @@ const EditorSection = ({
   const [resolution, setResolution] = useState(RESOLUTIONS[1]);
   const [isLoading, setIsLoading] = useState(false);
   const [generatedImage, setGeneratedImage] = useState(null);
+  // NEW STATE: 'i2i' for Image-to-Image, 't2i' for Text-to-Image
+  const [generationMode, setGenerationMode] = useState('i2i'); 
 
   const fileToDataUri = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -280,11 +282,11 @@ const EditorSection = ({
   };
 
   /**
-   * Handles the image generation process using the Gemini API (gemini-2.5-flash-image-preview).
+   * Handles the image generation process using the appropriate Gemini API model.
    */
   const handleGenerate = async () => {
-    if (!uploadedImage) {
-      showToast('Please upload a base image first.', 'info');
+    if (generationMode === 'i2i' && !uploadedImage) {
+      showToast('Please upload a base image for Image-to-Image mode.', 'info');
       return;
     }
     if (prompt.trim().length < 5) {
@@ -295,105 +297,115 @@ const EditorSection = ({
     setIsLoading(true);
     setGeneratedImage(null);
 
-    // 1. Extract base64 data and mime type from the data URI
-    const [mimePart, base64Data] = uploadedImage.split(',');
-    if (!base64Data) {
-        showToast('Error processing image data.', 'error');
-        setIsLoading(false);
-        return;
-    }
-    const mimeTypeMatch = mimePart.match(/:(.*?);/);
-    // Use the matched MIME type or default to image/jpeg if needed
-    const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : 'image/jpeg'; 
-
-    // 2. Setup API constants
-    const apiKey ="AIzaSyCsleNNyPJybyY20Ck0uuy4n98MfPoqcTM";
-    // Using the specified image-to-image model
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
-    
-    // System instructions guide the model's behavior
-    const systemPrompt = `You are NanoBananaPi, an expert AI photo editor. Apply the requested style: ${selectedStyle}, and the following prompt: "${prompt}". The consistency setting is ${consistency}%. Prioritize the creative instruction for low consistency and structural fidelity for high consistency. Output only the transformed image.`;
-
-    // 3. Construct the payload for image-to-image generation
-    const payload = {
-        contents: [
-            {
-                role: "user",
-                parts: [
-                    { text: prompt }, // The text instruction
-                    {
-                        inlineData: {
-                            mimeType: mimeType,
-                            data: base64Data // The base64 part of the uploaded image
-                        }
-                    } // The input image
-                ]
-            }
-        ],
-        generationConfig: {
-            responseModalities: ['TEXT', 'IMAGE']
-        },
-        systemInstruction: {
-            parts: [{ text: systemPrompt }]
-        },
-    };
-
-    // 4. API Call with Exponential Backoff
+    const apiKey = "AIzaSyDwY1J1bRmxiyR3e57wIAmEBtBeOm9vKpk";
     const maxRetries = 3;
     let newImage = null;
     let retryDelay = 1000;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            let response;
 
-            if (!response.ok) {
-                // Throwing an error to trigger retry or final catch
-                throw new Error(`API returned status ${response.status}`);
-            }
+            if (generationMode === 'i2i') {
+                // --- IMAGE-TO-IMAGE (I2I) Logic (using gemini-2.5-flash-image-preview) ---
+                const i2iApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
+                
+                const [mimePart, base64Data] = uploadedImage.split(',');
+                const mimeTypeMatch = mimePart.match(/:(.*?);/);
+                const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : 'image/jpeg'; 
+                
+                const systemPrompt = `You are NanoBananaPi, an expert AI photo editor. Apply the requested style: ${selectedStyle}, and the following prompt: "${prompt}". The consistency setting is ${consistency}%. Prioritize the creative instruction for low consistency and structural fidelity for high consistency. Output only the transformed image.`;
 
-            const result = await response.json();
-            // Find the image part in the response
-            const base64DataResult = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+                const i2iPayload = {
+                    contents: [
+                        {
+                            role: "user",
+                            parts: [
+                                { text: prompt }, 
+                                { inlineData: { mimeType: mimeType, data: base64Data } } 
+                            ]
+                        }
+                    ],
+                    generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                };
 
-            if (base64DataResult) {
-                // Construct the image URL from the returned base64 data
-                newImage = `data:image/png;base64,${base64DataResult}`;
-                break; // Success! Exit loop.
+                response = await fetch(i2iApiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(i2iPayload)
+                });
+
+                if (!response.ok) throw new Error(`I2I API returned status ${response.status}`);
+                
+                const result = await response.json();
+                const base64DataResult = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+
+                if (base64DataResult) {
+                    newImage = `data:image/png;base64,${base64DataResult}`;
+                    break;
+                } else {
+                    throw new Error('Image data not found in I2I response.');
+                }
+
             } else {
-                // Handle cases where API was successful but image data is missing (e.g., safety block)
-                throw new Error('Image data not found in response. Generation may have been blocked.');
+                // --- TEXT-TO-IMAGE (T2I) Logic (using imagen-3.0-generate-002) ---
+                const t2iApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`;
+                
+                // Construct T2I Prompt using style
+                const fullPrompt = `${selectedStyle} style, high quality, detailed: ${prompt}`;
+
+                const t2iPayload = { 
+                    instances: [{ prompt: fullPrompt }], 
+                    parameters: { 
+                        sampleCount: 1,
+                        // Could potentially use resolution state here if we parse it (e.g., 1024x1024)
+                    } 
+                };
+
+                response = await fetch(t2iApiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(t2iPayload)
+                });
+
+                if (!response.ok) throw new Error(`T2I API returned status ${response.status}`);
+
+                const result = await response.json();
+                const base64DataResult = result?.predictions?.[0]?.bytesBase64Encoded;
+
+                if (base64DataResult) {
+                    newImage = `data:image/png;base64,${base64DataResult}`;
+                    break;
+                } else {
+                    throw new Error('Image data not found in T2I response. Generation may have been blocked.');
+                }
             }
+
 
         } catch (error) {
             if (attempt === maxRetries - 1) {
                 showToast(`Image generation failed after multiple attempts. Error: ${error.message}`, 'error');
             } else {
-                // Wait with exponential backoff
                 await new Promise(resolve => setTimeout(resolve, retryDelay));
                 retryDelay *= 2;
             }
         }
     }
 
-    // 5. Update UI states upon successful generation
     if (newImage) {
         setGeneratedImage(newImage);
         showToast('✨ Magic Generated! Check out your new photo.', 'success');
 
-        // Update history
         const newHistoryItem = {
             id: Date.now(),
             prompt,
             style: selectedStyle,
             resultUrl: newImage,
-            baseImage: uploadedImage,
+            baseImage: generationMode === 'i2i' ? uploadedImage : 'T2I', // Store marker for T2I
+            mode: generationMode,
         };
-        const updatedHistory = [newHistoryItem, ...history.slice(0, 9)]; // Limit to 10
+        const updatedHistory = [newHistoryItem, ...history.slice(0, 9)];
         setHistory(updatedHistory);
         localStorage.setItem('nanoBananaHistory', JSON.stringify(updatedHistory));
     }
@@ -402,12 +414,24 @@ const EditorSection = ({
   };
 
   const handleReEdit = (item) => {
-    setUploadedImage(item.baseImage);
+    setGenerationMode(item.mode || 'i2i');
+    setUploadedImage(item.mode === 'i2i' ? item.baseImage : null);
     setPrompt(item.prompt);
     setSelectedStyle(item.style);
     setGeneratedImage(null);
     scrollToRef('editor');
   };
+  
+  const handleModeChange = (mode) => {
+      setGenerationMode(mode);
+      // Clear image when switching to T2I
+      if (mode === 't2i') {
+          setUploadedImage(null);
+      }
+      setGeneratedImage(null);
+  };
+
+  const isGenerateDisabled = isLoading || prompt.trim().length < 5 || (generationMode === 'i2i' && !uploadedImage);
 
   return (
     <section id="editor" className="min-h-screen bg-slate-900 pt-20 pb-16">
@@ -419,19 +443,46 @@ const EditorSection = ({
         <div className="grid lg:grid-cols-3 gap-8">
           {/* LEFT COLUMN: UPLOAD & INPUT */}
           <div className="lg:col-span-2 space-y-8">
-            <h3 className="text-2xl font-bold text-amber-400">1. Upload Base Image</h3>
-            <Dropzone onFileDrop={handleFileDrop} uploadedImage={uploadedImage} />
+            
+            {/* NEW: MODE SELECTOR */}
+            <h3 className="text-2xl font-bold text-amber-400">1. Select Mode</h3>
+            <div className="flex bg-slate-800 rounded-xl p-1 shadow-lg">
+                <button
+                    onClick={() => handleModeChange('i2i')}
+                    className={`flex-1 py-3 px-4 rounded-xl text-lg font-bold transition duration-200 ${generationMode === 'i2i' ? `${primaryColor} ${primaryTextColor} shadow-md` : 'text-gray-400 hover:bg-slate-700'}`}
+                >
+                    🖼️ Image-to-Image
+                </button>
+                <button
+                    onClick={() => handleModeChange('t2i')}
+                    className={`flex-1 py-3 px-4 rounded-xl text-lg font-bold transition duration-200 ${generationMode === 't2i' ? `${primaryColor} ${primaryTextColor} shadow-md` : 'text-gray-400 hover:bg-slate-700'}`}
+                >
+                    ✍️ Text-to-Image
+                </button>
+            </div>
 
-            <h3 className="text-2xl font-bold text-amber-400">2. Describe Your Vision</h3>
+
+            {/* CONDITIONAL DROPZONE */}
+            {generationMode === 'i2i' && (
+                <>
+                    <h3 className="text-2xl font-bold text-amber-400">2. Upload Base Image</h3>
+                    <Dropzone onFileDrop={handleFileDrop} uploadedImage={uploadedImage} />
+                </>
+            )}
+
+            <h3 className="text-2xl font-bold text-amber-400">{generationMode === 'i2i' ? '3. Describe Your Edits' : '2. Describe Your Creation'}</h3>
             <textarea
               className="w-full min-h-[120px] p-4 text-lg bg-slate-800 text-white rounded-xl resize-none focus:ring-4 focus:ring-amber-500/50 transition"
-              placeholder="E.g., 'Turn this into a comic book hero in a palace wearing a banana suit'"
+              placeholder={generationMode === 'i2i' 
+                  ? "E.g., 'Turn this into a comic book hero in a palace wearing a banana suit'"
+                  : "E.g., 'A majestic astronaut riding a giant banana through a nebula, digital art'"
+              }
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               aria-label="Text prompt for AI image editing"
             />
 
-            <h3 className="text-2xl font-bold text-amber-400">3. Select Style & Options</h3>
+            <h3 className="text-2xl font-bold text-amber-400">{generationMode === 'i2i' ? '4. Select Style & Options' : '3. Select Style & Options'}</h3>
             {/* Style Selector */}
             <div className="flex flex-wrap gap-3">
               {STYLES.map(style => (
@@ -468,31 +519,33 @@ const EditorSection = ({
                     {RESOLUTIONS.map(res => <option key={res} value={res}>{res}</option>)}
                   </select>
                 </div>
-                <div className="flex flex-col">
-                  <label className="mb-2 text-gray-300 flex justify-between">
-                    Consistency Boost (Fidelity to Original): <span className="font-mono text-amber-400">{consistency}%</span>
-                  </label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={consistency}
-                    onChange={(e) => setConsistency(e.target.value)}
-                    className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer range-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
-                  />
-                  <div className="flex justify-between text-xs text-gray-500 mt-1">
-                    <span>Creative Freedom</span>
-                    <span>High Fidelity</span>
+                {generationMode === 'i2i' && (
+                  <div className="flex flex-col">
+                    <label className="mb-2 text-gray-300 flex justify-between">
+                      Consistency Boost (Fidelity to Original): <span className="font-mono text-amber-400">{consistency}%</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={consistency}
+                      onChange={(e) => setConsistency(e.target.value)}
+                      className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer range-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500 mt-1">
+                      <span>Creative Freedom</span>
+                      <span>High Fidelity</span>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             </details>
 
             <div className="pt-6">
               <BananaButton
                 onClick={handleGenerate}
-                disabled={isLoading || !uploadedImage || prompt.trim().length < 5}
+                disabled={isGenerateDisabled}
                 className="w-full text-2xl py-4 shadow-2xl shadow-amber-500/50 flex items-center justify-center"
               >
                 {isLoading ? (
@@ -515,7 +568,7 @@ const EditorSection = ({
 
           {/* RIGHT COLUMN: RESULT & HISTORY */}
           <div className="space-y-8">
-            <h3 className="text-2xl font-bold text-white border-b border-gray-700 pb-3">4. Result Preview</h3>
+            <h3 className="text-2xl font-bold text-white border-b border-gray-700 pb-3">Result Preview</h3>
             <div className="aspect-square w-full bg-slate-800 rounded-2xl shadow-xl overflow-hidden flex items-center justify-center border-4 border-dashed border-gray-700">
               {generatedImage ? (
                 <a href={generatedImage} download="nanobanana_ai_edit.png" className="group block relative w-full h-full">
@@ -528,10 +581,12 @@ const EditorSection = ({
                     <span className="text-white text-xl font-bold p-3 bg-green-600 rounded-xl">Download Image</span>
                   </div>
                 </a>
-              ) : uploadedImage ? (
+              ) : (uploadedImage && generationMode === 'i2i') ? (
                 <p className="text-gray-500 text-lg p-4 text-center">Ready to generate. Click the button!</p>
               ) : (
-                <p className="text-gray-500 text-lg p-4 text-center">Upload an image to begin the magic.</p>
+                <p className="text-gray-500 text-lg p-4 text-center">
+                    {generationMode === 't2i' ? 'Enter a prompt and generate a new image!' : 'Upload an image to begin the magic.'}
+                </p>
               )}
             </div>
 
@@ -548,7 +603,9 @@ const EditorSection = ({
                     <img src={item.resultUrl} alt="History result" className="w-12 h-12 object-cover rounded-lg" />
                     <div>
                       <p className="text-sm font-medium text-white line-clamp-1">{item.prompt}</p>
-                      <p className="text-xs text-amber-400">{item.style}</p>
+                      <p className="text-xs text-amber-400">
+                        {item.style} - ({item.mode === 't2i' ? 'T2I' : 'I2I'})
+                      </p>
                     </div>
                   </div>
                   <button className="text-sm text-gray-400 hover:text-amber-400 font-medium ml-2 shrink-0">
@@ -768,4 +825,4 @@ export default function App() {
     </div>
   );
 }
-
+ 
