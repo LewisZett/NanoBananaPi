@@ -307,7 +307,7 @@ const EditorSection = ({
     const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : 'image/jpeg'; 
 
     // 2. Setup API constants
-    const apiKey = "AIzaSyDwY1J1bRmxiyR3e57wIAmEBtBeOm9vKpk";
+    const apiKey ="AIzaSyCsleNNyPJybyY20Ck0uuy4n98MfPoqcTM";
     // Using the specified image-to-image model
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
     
